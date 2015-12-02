@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <CL/opencl.h>
 #include <iostream>
+#include <Windows.h>
 using namespace std;
 
 // Host buffers for demo
@@ -43,6 +44,10 @@ int iNumElements = 11444777;	// Length of float arrays to process (odd # for ill
 cl_float* matInitiale;
 cl_float* matFinale;
 cl_int* matWritable;
+
+/*float* matInitialeF;
+float* matFinaleF;
+int* matWritableF;*/
 
 
 // Forward Declarations
@@ -116,23 +121,80 @@ Arguments ParseArgs(int argc, char** argv)
 	return args;
 }
 
-void InitMatrices(int n, int m, float* matInitiale, float* matFinale, int* matWritable)
+void InitMatrices(int n, int m, float* matInitiale_l, float* matFinale_l, int* matWritable_l)
 {
 	int counter = 0;
 	for (size_t i = 0; i< n; i++)
 	{
 		for (size_t j = 0; j < m; j++)
 		{
-			matInitiale[counter] = j*(m - j - 1) * i*(n - i - 1);
-			matFinale[counter] = j*(m - j - 1) * i*(n - i - 1);
+			matInitiale_l[counter] = j*(m - j - 1) * i*(n - i - 1);
+			matFinale_l[counter] = j*(m - j - 1) * i*(n - i - 1);
 			if (i == 0 || j == 0 || i == n - 1 || j == m - 1)
-				matWritable[counter] = 0;
+				matWritable_l[counter] = 0;
 			else
-				matWritable[counter] = 1;
+				matWritable_l[counter] = 1;
 			counter++;
 		}
 	}
 }
+
+void PrintMatrice(int n, int m, float* matToPrint)
+{
+	/*printf("              ");
+	for (int k = 0; k < m; k++)
+	{
+		//printf("Col #%05d ", k);
+	}
+	printf("\n");
+	int counter = 0;
+	for (int i = 0; i < n; i++)
+	{
+		//printf("Line #%05d : ", i);
+		for (int j = 0; j < m; j++)
+		{
+			char output[50];
+			printf("%.2f ", matToPrint[counter++]);
+		}
+		printf("\n");
+	}
+	printf("\n");*/
+}
+
+void ExecuteSequentiel(Arguments args, float td_div_h_squ, float one_minus_four_times_tdhh)
+{
+	for (int i = 0; i < args.nombreDePasDeTemps_np; i++)
+	{
+		int counter = 0;
+		for (int i = 0; i < args.nbLignes_n; i++)
+		{
+			for (int j = 0; j < args.nbCol_m; j++)
+			{
+				if (matWritable[counter] != 0)
+				{
+					matFinale[counter] = one_minus_four_times_tdhh
+						* matInitiale[counter]
+						+ td_div_h_squ
+						* (matInitiale[counter - 1] + matInitiale[counter + 1] + matInitiale[counter - args.nbCol_m] + matInitiale[counter + args.nbCol_m]);
+				}
+				else
+					matFinale[counter] = 0;
+
+				counter++;
+			}
+		}
+
+		counter = 0;
+		for (int i = 0; i < args.nbLignes_n; i++)
+		{
+			for (int j = 0; j < args.nbCol_m; j++)
+			{
+				matInitiale[counter] = matFinale[counter++];
+			}
+		}
+	}
+}
+
 
 int main(int argc, char** argv)
 {
@@ -141,16 +203,57 @@ int main(int argc, char** argv)
 	char* source = oclLoadProgSource(cPathAndName, 0, szFinalLength);*/
 
 	Arguments args = ParseArgs(argc, argv);
+
+	float td_div_h_squ = (float)args.td / (float)(args.h*args.h);
+	float one_minus_four_times_tdhh = (1 - 4 * (td_div_h_squ));
+
+	double tempsExecSeq = 1;
+	double tempsExecPar = 1;
+
 	// set and log Global and Local work size dimensions
-	szLocalWorkSize = args.nbCol_m > args.nbLignes_n ? args.nbCol_m : args.nbLignes_n;
 	szGlobalWorkSize = args.nbCol_m * args.nbLignes_n;  // rounded up to the nearest multiple of the LocalWorkSize
+
+	int greater = args.nbCol_m > args.nbLignes_n ? args.nbCol_m : args.nbLignes_n;
+
+	int maxLocalSizeOnOurMachine = 1024;
+
+	if (greater > maxLocalSizeOnOurMachine)
+	{
+		greater = maxLocalSizeOnOurMachine;
+		while (szGlobalWorkSize % greater != 0 && greater > 2)
+			greater--;
+	}
+	
+	szLocalWorkSize = greater; //args.nbCol_m > args.nbLignes_n ? args.nbCol_m : args.nbLignes_n;
+	
+
+	/*matInitialeF = (float*)malloc(szGlobalWorkSize * sizeof(float));
+	matFinaleF = (float*)malloc(szGlobalWorkSize * sizeof(float));
+	matWritableF = (int*)malloc(szGlobalWorkSize * sizeof(int));*/
 
 	matInitiale = (cl_float*)malloc(szGlobalWorkSize * sizeof(cl_float));
 	matFinale = (cl_float*)malloc(szGlobalWorkSize * sizeof(cl_float));
 	matWritable = (cl_int*)malloc(szGlobalWorkSize * sizeof(cl_int));
-	srcB = (cl_float*)malloc(7 * sizeof(cl_float));
 
 	InitMatrices(args.nbLignes_n, args.nbCol_m, matInitiale, matFinale, matWritable);
+	
+	//Start timer
+	SYSTEMTIME stB;
+	GetSystemTime(&stB);
+	
+	ExecuteSequentiel(args, td_div_h_squ, one_minus_four_times_tdhh);
+	
+	//End timer
+	SYSTEMTIME stE;
+	GetSystemTime(&stE);
+
+	tempsExecSeq = ((stE.wMinute * 60 * 1000) + (stE.wSecond * 1000) + stE.wMilliseconds) - ((stB.wMinute * 60 * 1000) + (stB.wSecond * 1000) + stB.wMilliseconds);
+
+	PrintMatrice(args.nbLignes_n, args.nbCol_m, matFinale);
+
+	InitMatrices(args.nbLignes_n, args.nbCol_m, matInitiale, matFinale, matWritable);
+
+	srcB = (cl_float*)malloc(7 * sizeof(cl_float));
 
 	// start logs 
 	cExecutableName = "TP4";
@@ -160,9 +263,6 @@ int main(int argc, char** argv)
 	
 
 	//dst = (void *)malloc(sizeof(cl_float)* szGlobalWorkSize);
-
-	float td_div_h_squ = args.td / (args.h * args.h);
-	float one_minus_four_times_tdhh = (1 - 4 * (td_div_h_squ));
 
 	((float*)srcB)[0] = td_div_h_squ;
 	((float*)srcB)[1] = one_minus_four_times_tdhh;
@@ -199,11 +299,11 @@ int main(int argc, char** argv)
 	}
 
 	// Allocate the OpenCL buffer memory objects for source and result on the device GMEM
-	cmDevSrcA = clCreateBuffer(cxGPUContext, CL_MEM_READ_ONLY, sizeof(cl_float)* szGlobalWorkSize, NULL, &ciErr1);
+	cmDevSrcA = clCreateBuffer(cxGPUContext, CL_MEM_READ_WRITE, sizeof(cl_float)* szGlobalWorkSize, NULL, &ciErr1);
 	cmDevWrite = clCreateBuffer(cxGPUContext, CL_MEM_READ_ONLY, sizeof(cl_int)* szGlobalWorkSize, NULL, &ciErr1);
 	cmDevSrcB = clCreateBuffer(cxGPUContext, CL_MEM_READ_ONLY, sizeof(cl_float)* 7, NULL, &ciErr2);
 	ciErr1 |= ciErr2;
-	cmDevDst = clCreateBuffer(cxGPUContext, CL_MEM_WRITE_ONLY, sizeof(cl_float)* szGlobalWorkSize, NULL, &ciErr2);
+	cmDevDst = clCreateBuffer(cxGPUContext, CL_MEM_READ_WRITE, sizeof(cl_float)* szGlobalWorkSize, NULL, &ciErr2);
 	ciErr1 |= ciErr2;
 	if (ciErr1 != CL_SUCCESS)
 	{
@@ -252,17 +352,21 @@ int main(int argc, char** argv)
 
 	// Asynchronous write of data to GPU device
 	
+	//Start timer
+	GetSystemTime(&stB);
 
 	ciErr1 = clEnqueueWriteBuffer(cqCommandQueue, cmDevSrcA, CL_FALSE, 0, sizeof(cl_float)* szGlobalWorkSize, matInitiale, 0, NULL, NULL);
 	ciErr1 = clEnqueueWriteBuffer(cqCommandQueue, cmDevWrite, CL_FALSE, 0, sizeof(cl_int)* szGlobalWorkSize, matWritable, 0, NULL, NULL);
+	ciErr1 = clEnqueueWriteBuffer(cqCommandQueue, cmDevDst, CL_FALSE, 0, sizeof(cl_float)* szGlobalWorkSize, matFinale, 0, NULL, NULL);
 	if (ciErr1 != CL_SUCCESS)
 	{
 		Cleanup(argc, argv, EXIT_FAILURE);
 	}
-	for (int i = 0; i < args.nombreDePasDeTemps_np; ++i)
+	
+	for (int i = 0; i < args.nombreDePasDeTemps_np; i++)
 	{	
-		((float*)srcB)[4] = i;
-		ciErr1 |= clEnqueueWriteBuffer(cqCommandQueue, cmDevSrcB, CL_FALSE, 0, sizeof(cl_float)* 7, srcB, 0, NULL, NULL);
+		((float*)srcB)[4] = i % 2;
+		ciErr1 |= clEnqueueWriteBuffer(cqCommandQueue, cmDevSrcB, CL_TRUE, 0, sizeof(cl_float)* 7, srcB, 0, NULL, NULL);
 		// Launch kernel
 		ciErr1 = clEnqueueNDRangeKernel(cqCommandQueue, ckKernel, 1, NULL, &szGlobalWorkSize, &szLocalWorkSize, 0, NULL, NULL);
 		if (ciErr1 != CL_SUCCESS)
@@ -273,9 +377,15 @@ int main(int argc, char** argv)
 	
 	// Synchronous/blocking read of results, and check accumulated errors
 	if (args.nombreDePasDeTemps_np % 2 == 0)
-		ciErr1 = clEnqueueReadBuffer(cqCommandQueue, cmDevDst, CL_TRUE, 0, sizeof(cl_float)* szGlobalWorkSize, matFinale, 0, NULL, NULL);
-	else
 		ciErr1 = clEnqueueReadBuffer(cqCommandQueue, cmDevSrcA, CL_TRUE, 0, sizeof(cl_float)* szGlobalWorkSize, matFinale, 0, NULL, NULL);
+	else
+		ciErr1 = clEnqueueReadBuffer(cqCommandQueue, cmDevDst, CL_TRUE, 0, sizeof(cl_float)* szGlobalWorkSize, matFinale, 0, NULL, NULL);
+	
+	//End timer
+	GetSystemTime(&stE);
+
+	tempsExecPar = ((stE.wMinute * 60 * 1000) + (stE.wSecond * 1000) + stE.wMilliseconds) - ((stB.wMinute * 60 * 1000) + (stB.wSecond * 1000) + stB.wMilliseconds);
+
 	if (ciErr1 != CL_SUCCESS)
 	{
 		Cleanup(argc, argv, EXIT_FAILURE);
@@ -285,18 +395,11 @@ int main(int argc, char** argv)
 	// Cleanup and leave
 	Cleanup(argc, argv, EXIT_SUCCESS); //(bMatch == shrTRUE) ? EXIT_SUCCESS : EXIT_FAILURE);
 
-	/*for (int i = 0; i < szGlobalWorkSize; ++i)
-	{
-		std::cout << ((const cl_float*)matFinale)[i] << std::endl;
-		if (i % 1000 == 999)
-		{
-			int a;
-			std::cin >> a;
-			cin.clear();
-			fflush(stdin);
-		}
+	PrintMatrice(args.nbLignes_n, args.nbCol_m, matFinale);
 
-	}*/
+	printf("Temps d'execution sequentiel (s): %f\n\n", tempsExecSeq / 1000);
+	printf("Temps d'execution parallele (s): %f\n\n", tempsExecPar / 1000);
+	printf("\nAcceleration: %f\n", (tempsExecPar == 0 ? 0 : tempsExecSeq / tempsExecPar));
 
 	int a;
 	std::cin >> a;
@@ -307,56 +410,7 @@ int main(int argc, char** argv)
 
 void Cleanup(int argc, char **argv, int iExitCode)
 {
-	// Cleanup allocated objects
-	/*if (cPathAndName)
-		free(cPathAndName);
-	if (cSourceCL)
-		free(cSourceCL);
-	if (ckKernel)
-		clReleaseKernel(ckKernel);
-	if (cpProgram)
-		clReleaseProgram(cpProgram);
-	if (cqCommandQueue)
-		clReleaseCommandQueue(cqCommandQueue);
-	if (cxGPUContext)
-		clReleaseContext(cxGPUContext);
-	if (cmDevSrcA)
-		clReleaseMemObject(cmDevSrcA);
-	if (cmDevSrcB)
-		clReleaseMemObject(cmDevSrcB);
-	if (cmDevDst)
-		clReleaseMemObject(cmDevDst);
-
-	// Free host memory
-	free(srcA);
-	free(srcB);
-	free(dst);*/
+	printf("ERROR! %d\n", iExitCode);
 }
 
-/*
-void ExecuteSequentiel(Arguments args, float matInitiale[args.nbLignes_n][args.nbCol_m], float matFinale[args.nbLignes_n][args.nbCol_m], float td_div_h_squ, float one_minus_four_times_tdhh)
-{
-for (int i = 0; i < args.nombreDePasDeTemps_np; i++)
-{
-for (int i = 1; i < args.nbLignes_n - 1; i++)
-{
-for (int j = 1; j < args.nbCol_m - 1; j++)
-{
-usleep(TEMPS_ATTENTE);
-matFinale[i][j] = one_minus_four_times_tdhh
-* matInitiale[i][j]
-+ td_div_h_squ
-* (matInitiale[i-1][j] + matInitiale[i+1][j] + matInitiale[i][j-1] + matInitiale[i][j+1]);
-}
-}
 
-for (int i = 0; i < args.nbLignes_n; i++)
-{
-for (int j = 0; j < args.nbCol_m; j++)
-{
-matInitiale[i][j] = matFinale[i][j];
-}
-}
-}
-}
-*/
